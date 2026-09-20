@@ -193,9 +193,10 @@ db.exec(`
     ended_at TEXT,
     parent_agent_id TEXT,
     metadata TEXT,
-    -- See sessions.provenance. Matters most here: 'status' defaults to
-    -- 'waiting', so an agent nothing ever reported reads as idle. Provenance
-    -- at least says whether anything reported the row at all.
+    -- See sessions.provenance. Complementary to the 'unreported' status:
+    -- that says nothing has told us what this agent is DOING; this says
+    -- which write path produced the row at all. An imported row can carry a
+    -- real status and still not be live observation.
     provenance TEXT NOT NULL DEFAULT 'unknown'
       CHECK(provenance IN ('hook','api','import','derived','seed','unknown')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,

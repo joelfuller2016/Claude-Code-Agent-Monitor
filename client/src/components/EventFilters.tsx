@@ -171,7 +171,7 @@ export const STATUS_TO_EVENT_TYPES: Record<string, string[]> = {
   error: ["error", "APIError", "codex_error"],
 };
 
-export const STATUS_OPTIONS = ["working", "waiting", "completed", "error"] as const;
+export const STATUS_OPTIONS = ["working", "waiting", "completed", "error", "unreported"] as const;
 
 // Expand the selected status presets into a union of event_type values. The
 // consumer merges this with any explicit event_type selection so both layers

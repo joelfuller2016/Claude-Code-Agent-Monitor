@@ -44,7 +44,8 @@
     "completed": "Completed",
     "error": "Error",
     "active": "Active",
-    "abandoned": "Abandoned"
+    "abandoned": "Abandoned",
+    "unreported": "Unreported"
   },
   "awaitingReason": {
     "notification": {

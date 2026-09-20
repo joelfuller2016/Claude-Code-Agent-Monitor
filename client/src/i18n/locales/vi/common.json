@@ -44,7 +44,8 @@
     "completed": "Hoàn tất",
     "error": "Lỗi",
     "active": "Đang hoạt động",
-    "abandoned": "Bị bỏ dở"
+    "abandoned": "Bị bỏ dở",
+    "unreported": "Chưa báo cáo"
   },
   "awaitingReason": {
     "notification": {

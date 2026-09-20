@@ -181,7 +181,7 @@ db.exec(`
     name TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'main' CHECK(type IN ('main','subagent')),
     subagent_type TEXT,
-    status TEXT NOT NULL DEFAULT 'waiting' CHECK(status IN ('working','waiting','completed','error')),
+    status TEXT NOT NULL DEFAULT 'unreported' CHECK(status IN ('working','waiting','completed','error','unreported')),
     task TEXT,
     current_tool TEXT,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -1228,7 +1228,7 @@ try {
         name TEXT NOT NULL,
         type TEXT NOT NULL DEFAULT 'main' CHECK(type IN ('main','subagent')),
         subagent_type TEXT,
-        status TEXT NOT NULL DEFAULT 'waiting' CHECK(status IN ('working','waiting','completed','error')),
+        status TEXT NOT NULL DEFAULT 'unreported' CHECK(status IN ('working','waiting','completed','error','unreported')),
         task TEXT,
         current_tool TEXT,
         started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -1265,6 +1265,75 @@ try {
       CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id);
       CREATE INDEX IF NOT EXISTS idx_agents_workflow ON agents(workflow_run_id);
     `);
+  }
+}
+
+// Migrate: add the 'unreported' agent status.
+//
+// `status` defaulted to 'waiting', so an agent whose state was never reported was
+// indistinguishable from one observed idle — a default masquerading as an observation.
+// Every "is this agent free?" reader treated the two the same, which fails toward
+// "free" and is the direction that actually costs something.
+//
+// Existing rows are NOT reclassified. A stored 'waiting' was written by a real code
+// path and we cannot know retroactively whether anything affirmed it; relabelling
+// those rows to 'unreported' would manufacture the opposite lie. Only rows created
+// after this migration, by a path that supplies no status, get 'unreported'.
+//
+// SQLite cannot ALTER a CHECK constraint, so this is the same rename-copy-drop
+// rebuild used for the legacy 'idle' migration above — with one deliberate
+// difference. That block recreates a HARDCODED index list, which on a real store
+// would drop `idx_agents_session_type` (present) and create `idx_agents_parent`
+// (absent). Index and column sets are therefore read from sqlite_master and
+// PRAGMA table_info at migration time and replayed, so this cannot silently lose
+// an index or a column added after this code was written.
+{
+  const agentsTable = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'")
+    .get();
+  if (agentsTable && agentsTable.sql && !agentsTable.sql.includes("'unreported'")) {
+    // Capture what actually exists, rather than what this file assumes exists.
+    const cols = db
+      .prepare("PRAGMA table_info(agents)")
+      .all()
+      .map((c) => `"${c.name}"`)
+      .join(", ");
+    const carried = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE tbl_name='agents' AND type='index' AND sql IS NOT NULL"
+      )
+      .all()
+      .map((r) => r.sql);
+
+    const rebuilt = agentsTable.sql
+      .replace(/CREATE TABLE\s+"?agents"?/i, "CREATE TABLE agents_new")
+      .replace(
+        /status TEXT NOT NULL DEFAULT 'waiting' CHECK\(status IN \('working','waiting','completed','error'\)\)/,
+        "status TEXT NOT NULL DEFAULT 'unreported' CHECK(status IN ('working','waiting','completed','error','unreported'))"
+      );
+    if (rebuilt === agentsTable.sql) {
+      throw new Error(
+        "agents status migration: could not rewrite the CHECK constraint; refusing to rebuild the table blind"
+      );
+    }
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("BEGIN");
+    try {
+      db.exec(rebuilt);
+      // Named columns on both sides: column ORDER differs between a real store and
+      // the DDL literal in this file, so a positional `SELECT *` would transpose them.
+      db.exec(`INSERT INTO agents_new (${cols}) SELECT ${cols} FROM agents`);
+      db.exec("DROP TABLE agents");
+      db.exec("ALTER TABLE agents_new RENAME TO agents");
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      db.exec("PRAGMA foreign_keys = ON");
+      throw err;
+    }
+    db.exec("PRAGMA foreign_keys = ON");
+    for (const sql of carried) db.exec(sql);
   }
 }
 

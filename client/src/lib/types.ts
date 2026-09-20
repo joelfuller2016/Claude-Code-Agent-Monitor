@@ -577,7 +577,10 @@
 export type SessionStatus = "active" | "completed" | "error" | "abandoned";
 /** Persisted lifecycle state of an `Agent` row, driven by hook events
  *  (PreToolUse → "working", Stop/PostToolUse → "waiting", SubagentStop/error). */
-export type AgentStatus = "working" | "waiting" | "completed" | "error";
+export type AgentStatus = "working" | "waiting" | "completed" | "error" | "unreported";
+/** `"unreported"` means no writer has ever reported this agent's state. It is
+ *  deliberately NOT a synonym for `"waiting"`: an unreported agent must never be
+ *  counted as idle-and-available, which is what the old `waiting` default did. */
 /** Whether an `Agent` is the session's top-level Claude Code process ("main")
  *  or a delegated Task/Agent-tool invocation ("subagent"). */
 export type AgentType = "main" | "subagent";
@@ -2392,6 +2395,16 @@ export const STATUS_CONFIG: Record<
     color: "text-yellow-400",
     bg: "bg-yellow-500/10 border-yellow-500/20",
     dot: "bg-yellow-400",
+  },
+  // Slate, and deliberately drab: nothing has reported this agent's state. It is not
+  // idle, not working, and must not read as either. A muted badge is the honest
+  // rendering of "we do not know" — the failure this status exists to stop is a grey
+  // area being painted in a colour that implies knowledge.
+  unreported: {
+    labelKey: "common:status.unreported",
+    color: "text-slate-400",
+    bg: "bg-slate-500/10 border-slate-500/20",
+    dot: "bg-slate-400",
   },
   // Violet: the agent finished cleanly.
   completed: {

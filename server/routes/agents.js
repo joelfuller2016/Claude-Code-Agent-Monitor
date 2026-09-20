@@ -125,7 +125,10 @@ router.post("/", (req, res) => {
     name,
     type || "main",
     subagent_type || null,
-    status || "waiting",
+    // No status supplied means nothing has reported this agent's state. That is
+    // 'unreported', not 'waiting' — defaulting to 'waiting' asserted an observation
+    // no writer ever made, and made the row indistinguishable from an agent seen idle.
+    status || "unreported",
     task || null,
     parent_agent_id || null,
     metadata ? JSON.stringify(metadata) : null

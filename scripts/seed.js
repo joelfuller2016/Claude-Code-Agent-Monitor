@@ -27,7 +27,10 @@
  */
 
 const { v4: uuidv4 } = require("uuid");
-const { db, stmts } = require("../server/db");
+const { db, stmts, eventWriter } = require("../server/db");
+
+// Demo data. Recorded as `seed` so it can never be counted as real activity.
+const seedEvents = eventWriter("seed");
 
 // ── Stable fixture IDs ─────────────────────────────────────────────────────
 // These IDs are intentionally non-UUID-shaped strings prefixed with `demo-`
@@ -373,7 +376,7 @@ function seedFixtures() {
         const agent = randomItem(agents);
         const eventType = randomItem(["PreToolUse", "PostToolUse", "Notification"]);
         const tool = randomItem(TOOL_NAMES);
-        stmts.insertEvent.run(
+        seedEvents.insertEvent.run(
           sid,
           agent?.id ?? null,
           eventType,
@@ -569,7 +572,7 @@ function seedFullDemo() {
             : eventType === "PostToolUse"
               ? `Tool completed: ${tool}`
               : `Agent ${agent?.name || "unknown"} notification`;
-        stmts.insertEvent.run(
+        seedEvents.insertEvent.run(
           sid,
           agent?.id ?? null,
           eventType,
@@ -580,7 +583,7 @@ function seedFullDemo() {
       }
       const session = stmts.getSession.get(sid);
       if (session && session.status !== "active") {
-        stmts.insertEvent.run(
+        seedEvents.insertEvent.run(
           sid,
           null,
           "Stop",

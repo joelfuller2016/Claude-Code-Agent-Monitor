@@ -9,7 +9,17 @@
 const { Router } = require("express");
 const { v4: uuidv4 } = require("uuid");
 const dbModule = require("../db");
-const { stmts, db } = dbModule;
+const { stmts, db, eventWriter } = dbModule;
+
+// Three different trust stories share this router, so each gets its own
+// writer rather than a per-call argument someone can forget to pass:
+//   hookEvents    a local hook POST -- the route is token-exempt by design
+//   apiEvents     token-gated ingestion relayed from another machine
+//   derivedEvents the watchdog/liveness reaper's own conclusions, which no
+//                 hook reported and which must not read as observed fact
+const hookEvents = eventWriter("hook");
+const apiEvents = eventWriter("api");
+const derivedEvents = eventWriter("derived");
 const { broadcast } = require("../websocket");
 const TranscriptCache = require("../lib/transcript-cache");
 const { scanAndImportSubagents } = require("../../scripts/import-history");
@@ -187,7 +197,7 @@ function recoverInterruptedSession(sessionId, fullSess, mainAgentId, reasonSuffi
 
   const label = fullSess?.name || `Session ${sessionId.slice(0, 8)}`;
   const summary = reasonSuffix ? `${label} - ${reasonSuffix}` : `${label} - interrupted by user`;
-  stmts.insertEvent.run(sessionId, mainAgentId, "Interrupted", null, summary, null);
+  derivedEvents.insertEvent.run(sessionId, mainAgentId, "Interrupted", null, summary, null);
 
   broadcast("session_updated", stmts.getSession.get(sessionId));
   if (mainAgentId) broadcast("agent_updated", stmts.getAgent.get(mainAgentId));
@@ -439,6 +449,9 @@ function syncCardPromptPreview(sessionId, result) {
  * @returns {object|null} Broadcast-ready event, or null without a session id.
  */
 const processEvent = db.transaction((hookType, data, origin = null) => {
+  // A remote-push envelope arrived through the token-gated route, not from a
+  // hook on this machine; it is relayed evidence and is recorded as such.
+  const events = origin && origin.remotePush ? apiEvents : hookEvents;
   // `events.data` stores the entire hook envelope. Normalize the field before
   // ANY downstream work so its original userinfo cannot bypass the sanitized
   // session column through this separate durable persistence path.
@@ -963,7 +976,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
           broadcast("agent_created", stmts.getAgent.get(compactId));
 
           const compactSummary = `Context compacted - conversation history compressed (#${compaction.entries.indexOf(entry) + 1})`;
-          stmts.insertEvent.run(
+          events.insertEvent.run(
             sessionId,
             compactId,
             "Compaction",
@@ -1023,7 +1036,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
             .get(sessionId, `${apiErr.type}: ${apiErr.message}`);
           if (existing) continue;
 
-          stmts.insertEvent.run(
+          events.insertEvent.run(
             sessionId,
             mainAgentId,
             "APIError",
@@ -1106,7 +1119,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
 
         const insertTurn = (turn) => {
           const summary = `Turn completed in ${(turn.durationMs / 1000).toFixed(1)}s`;
-          stmts.insertEventAt.run(
+          events.insertEventAt.run(
             sessionId,
             mainAgentId,
             "TurnDuration",
@@ -1228,7 +1241,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
   // Bump session updated_at on every event
   stmts.touchSession.run(sessionId);
 
-  stmts.insertEvent.run(
+  events.insertEvent.run(
     sessionId,
     agentId,
     eventType,
@@ -1640,7 +1653,7 @@ function watchdogCheck() {
         const createdAt = Date.parse(apiErr.timestamp || "")
           ? new Date(apiErr.timestamp).toISOString()
           : new Date().toISOString();
-        stmts.insertEventAt.run(
+        derivedEvents.insertEventAt.run(
           sess.id,
           mainAgentId,
           "APIError",
@@ -1819,7 +1832,7 @@ function livenessReap({ ignoreIdleGate = false, provider = "claude" } = {}) {
     const label = sess.name || `Session ${sess.id.slice(0, 8)}`;
     const summary = `Session closed: ${label} (no running ${cli} process)`;
     const mainAgentId = provider === "codex" ? `codex:${sess.id}` : `${sess.id}-main`;
-    stmts.insertEvent.run(
+    derivedEvents.insertEvent.run(
       sess.id,
       stmts.getAgent.get(mainAgentId) ? mainAgentId : null,
       "SessionEnd",
@@ -2338,7 +2351,7 @@ router.post("/ingest-batch", (req, res) => {
     for (const ev of validToolEvents) {
       const ts = ev.timestamp || new Date().toISOString();
       const summary = ev.toolName ? `Called ${ev.toolName}` : "Remote tool event";
-      stmts.insertEventAt.run(
+      apiEvents.insertEventAt.run(
         sessionId,
         ev.agentId,
         REMOTE_TOOL_EVENT_TYPE,
@@ -2363,7 +2376,7 @@ router.post("/ingest-batch", (req, res) => {
     for (const t of validTurns) {
       const ts = t.timestamp || new Date().toISOString();
       const summary = "Remote turn";
-      stmts.insertEventAt.run(
+      apiEvents.insertEventAt.run(
         sessionId,
         t.agentId,
         REMOTE_TURN_EVENT_TYPE,

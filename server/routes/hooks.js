@@ -9,7 +9,7 @@
 const { Router } = require("express");
 const { v4: uuidv4 } = require("uuid");
 const dbModule = require("../db");
-const { stmts, db, eventWriter } = dbModule;
+const { stmts, db, eventWriter, rowWriter } = dbModule;
 
 // Three different trust stories share this router, so each gets its own
 // writer rather than a per-call argument someone can forget to pass:
@@ -17,9 +17,13 @@ const { stmts, db, eventWriter } = dbModule;
 //   apiEvents     token-gated ingestion relayed from another machine
 //   derivedEvents the watchdog/liveness reaper's own conclusions, which no
 //                 hook reported and which must not read as observed fact
-const hookEvents = eventWriter("hook");
-const apiEvents = eventWriter("api");
-const derivedEvents = eventWriter("derived");
+const hookEvents = rowWriter("hook");
+const apiEvents = rowWriter("api");
+const derivedEvents = rowWriter("derived");
+// Compaction rows are reconstructed by parsing the transcript during hook
+// processing, not reported by the hook itself -- and scripts/import-history.js
+// writes the same logical rows as import. Same origin, same label.
+const importEvents = rowWriter("import");
 const { broadcast } = require("../websocket");
 const TranscriptCache = require("../lib/transcript-cache");
 const { scanAndImportSubagents } = require("../../scripts/import-history");
@@ -223,8 +227,11 @@ function recoverInterruptedSession(sessionId, fullSess, mainAgentId, reasonSuffi
 function ensureSession(sessionId, data, origin = null) {
   let session = stmts.getSession.get(sessionId);
   const repoRemoteUrl = sanitizeRepoRemoteUrl(data.repo_remote_url);
+  // The remote-push distinction was already computed here for `source`; it is
+  // now persisted as provenance too, instead of being recomputed downstream.
+  const rows = origin && origin.remotePush ? apiEvents : hookEvents;
   if (!session) {
-    stmts.insertSession.run(
+    rows.insertSession.run(
       sessionId,
       data.session_name || `Session ${sessionId.slice(0, 8)}`,
       "active",
@@ -260,7 +267,7 @@ function ensureSession(sessionId, data, origin = null) {
     // Create main agent for new session
     const mainAgentId = `${sessionId}-main`;
     const sessionLabel = session.name || `Session ${sessionId.slice(0, 8)}`;
-    stmts.insertAgent.run(
+    rows.insertAgent.run(
       mainAgentId,
       sessionId,
       `Main Agent - ${sessionLabel}`,
@@ -570,7 +577,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
           }
         }
 
-        stmts.insertAgent.run(
+        events.insertAgent.run(
           subId,
           sessionId,
           subName,
@@ -954,7 +961,7 @@ const processEvent = db.transaction((hookType, data, origin = null) => {
           if (stmts.getAgent.get(compactId)) continue;
 
           const ts = entry.timestamp || new Date().toISOString();
-          stmts.insertAgent.run(
+          importEvents.insertAgent.run(
             compactId,
             sessionId,
             "Context Compaction",
@@ -2281,8 +2288,8 @@ router.post("/ingest-batch", (req, res) => {
           ? body.session_name
           : `Session ${sessionId.slice(0, 8)}`;
       db.prepare(
-        `INSERT INTO sessions (id, name, status, cwd, model, provider, source, started_at, updated_at)
-         VALUES (?, ?, 'active', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+        `INSERT INTO sessions (id, name, status, cwd, model, provider, source, started_at, updated_at, provenance)
+         VALUES (?, ?, 'active', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'api')`
       ).run(
         sessionId,
         sessionName,
@@ -2315,7 +2322,7 @@ router.post("/ingest-batch", (req, res) => {
     // guard + server/__tests__/codex-ingest.test.js "still records the turn
     // when the main agent row is missing").
     if (!stmts.getAgent.get(mainAgentId)) {
-      stmts.insertAgent.run(
+      apiEvents.insertAgent.run(
         mainAgentId,
         sessionId,
         `Main Agent - ${session.name || `Session ${sessionId.slice(0, 8)}`}`,

@@ -11,7 +11,10 @@ const { Router } = require("express");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { stmts, db } = require("../db");
+const { stmts, db, rowWriter } = require("../db");
+
+// Rows created through the authenticated REST surface, not by a hook.
+const apiRows = rowWriter("api");
 const { broadcast } = require("../websocket");
 const { calculateProviderCost, attachAgentCosts } = require("./pricing");
 const { parseSources, sourceColumnClause } = require("../lib/source-filter");
@@ -577,7 +580,7 @@ router.post("/", (req, res) => {
     return res.json({ session: existing, created: false });
   }
 
-  stmts.insertSession.run(
+  apiRows.insertSession.run(
     id,
     name || null,
     "active",

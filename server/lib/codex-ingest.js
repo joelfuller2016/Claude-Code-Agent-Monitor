@@ -10,7 +10,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { db, stmts } = require("../db");
+const { db, stmts, eventWriter } = require("../db");
+
+// Rows here are reconstructed from a rollout file already on disk, not
+// observed live, so they are imports even though the parse happens in-process.
+const importEvents = eventWriter("import");
 const {
   getCodexSessionsDir,
   getCodexStateDbPath,
@@ -373,7 +377,7 @@ function persistEvent(sessionId, agentId, record) {
   const timestamp = Date.parse(record.timestamp || "")
     ? new Date(record.timestamp).toISOString()
     : new Date().toISOString();
-  const info = stmts.insertEventAt.run(
+  const info = importEvents.insertEventAt.run(
     sessionId,
     agentId,
     eventType,
@@ -1175,7 +1179,7 @@ function persistCodexHookEvents(sessionId, hookType, data) {
   const attributedAgentId = stmts.getAgent.get(agentId) ? agentId : null;
   const turnId = typeof data?.turn_id === "string" ? data.turn_id : null;
   const insert = (eventType, tool, summary, extra) => {
-    const info = stmts.insertEvent.run(
+    const info = importEvents.insertEvent.run(
       sessionId,
       attributedAgentId,
       eventType,

@@ -200,6 +200,11 @@ db.exec(`
     tool_name TEXT,
     summary TEXT,
     data TEXT,
+    -- Which write path produced this row. Without it a hook-written row, an
+    -- imported row and a hand-crafted POST are byte-identical, so a reader has
+    -- no way to exclude the ones it does not trust. See EVENT_PROVENANCE.
+    provenance TEXT NOT NULL DEFAULT 'unknown'
+      CHECK(provenance IN ('hook','api','import','derived','seed','unknown')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
@@ -1545,6 +1550,95 @@ const CARD_PROMPT_PREVIEW_SQL = `COALESCE(
   )
 )`;
 
+// Provenance is the write path a row came in through -- NOT a claim about the
+// caller's authenticity. `/hooks` is exempt from the token gate by design
+// (server/lib/security.js), so a hand-rolled POST to it is still recorded as
+// `hook`; closing that write path is a separate concern. What the column does
+// buy is that an imported row, a server-derived row and seed data can each be
+// excluded by a reader that only trusts live hook traffic.
+//
+// Historical rows predate every writer that declares, so they backfill to
+// `unknown` rather than `hook`: labelling them as hook-written would assert
+// exactly the thing this column exists to stop asserting.
+try {
+  db.prepare("SELECT provenance FROM events LIMIT 1").get();
+} catch {
+  db.prepare(
+    "ALTER TABLE events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'unknown' " +
+      "CHECK(provenance IN ('hook','api','import','derived','seed','unknown'))"
+  ).run();
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_events_provenance ON events(provenance)`);
+
+/**
+ * Provenance-aware event writers.
+ *
+ * `events` rows arrive from paths with very different trust properties, and
+ * before this they were indistinguishable once written. A writer declares its
+ * path once, at construction, so no individual call site can forget to pass it.
+ *
+ *   hook    POST /hooks/event, /hooks/codex from a local Claude Code hook.
+ *           The route is token-exempt by design, so this means "came in through
+ *           the hook path", never "is known to be genuine".
+ *   api     Token-gated HTTP ingestion: /hooks/ingest-batch and a remote-push
+ *           /hooks/event. Authenticated, but relayed from another machine.
+ *   import  Offline parsing of transcripts already on disk
+ *           (lib/codex-ingest.js, scripts/import-history.js). Reconstructed
+ *           after the fact, not observed live.
+ *   derived The server's own inference -- watchdog and liveness reaping. No
+ *           writer reported these; the monitor concluded them.
+ *   seed    Synthetic demo data (scripts/seed.js). Must never be counted as
+ *           real activity.
+ *   unknown A caller that did not declare, and every row written before this
+ *           column existed.
+ */
+const EVENT_PROVENANCE = Object.freeze(["hook", "api", "import", "derived", "seed", "unknown"]);
+
+const insertEventStmt = db.prepare(
+  "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+);
+const insertEventAtStmt = db.prepare(
+  "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+);
+
+/**
+ * Returns the pair of event-insert statements bound to one provenance. Throws
+ * on an unrecognized value at construction, which is startup rather than
+ * mid-write -- the CHECK constraint is the backstop, not the first line.
+ */
+function eventWriter(provenance) {
+  if (!EVENT_PROVENANCE.includes(provenance)) {
+    throw new Error(
+      `eventWriter: unrecognized provenance ${JSON.stringify(provenance)}; expected one of ${EVENT_PROVENANCE.join(", ")}`
+    );
+  }
+  return {
+    provenance,
+    insertEvent: {
+      run: (sessionId, agentId, eventType, toolName, summary, data) =>
+        insertEventStmt.run(sessionId, agentId, eventType, toolName, summary, data, provenance),
+    },
+    insertEventAt: {
+      run: (sessionId, agentId, eventType, toolName, summary, data, createdAt) =>
+        insertEventAtStmt.run(
+          sessionId,
+          agentId,
+          eventType,
+          toolName,
+          summary,
+          data,
+          provenance,
+          createdAt
+        ),
+    },
+  };
+}
+
+// Back-compat: `stmts.insertEvent` keeps its exact signature for any caller
+// that has not been taught to declare. Such rows read as `unknown`, which is
+// the truth about them, rather than being silently attributed to the hook path.
+const undeclaredEvents = eventWriter("unknown");
+
 const stmts = {
   getSession: db.prepare("SELECT * FROM sessions WHERE id = ?"),
   listSessions: db.prepare(
@@ -1780,12 +1874,8 @@ const stmts = {
        )`
   ),
 
-  insertEvent: db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-  ),
-  insertEventAt: db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ),
+  insertEvent: undeclaredEvents.insertEvent,
+  insertEventAt: undeclaredEvents.insertEventAt,
   listEvents: db.prepare("SELECT * FROM events ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"),
   listEventsBySession: db.prepare(
     "SELECT * FROM events WHERE session_id = ? ORDER BY created_at DESC, id DESC"
@@ -2310,6 +2400,8 @@ const stmts = {
 module.exports = {
   db,
   stmts,
+  eventWriter,
+  EVENT_PROVENANCE,
   DB_PATH,
   DEFAULT_PRICING,
   DEFAULT_GPT_PRICING,

@@ -597,11 +597,15 @@ async function parseSubagentFile(filePath) {
  * Deduplicated by uuid — safe to call repeatedly.
  * Returns the number of compactions created.
  */
+// Every insert in this file reconstructs history from transcripts already on
+// disk, so provenance is the literal 'import' rather than an eventWriter from
+// server/db: these statements are prepared against the CALLER's dbModule, and
+// binding them to the singleton would break that injection.
 function importCompactions(dbModule, sessionId, mainAgentId, compactions) {
   if (!compactions || compactions.length === 0) return 0;
   const { db, stmts } = dbModule;
   const insertEvent = db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
   );
   let created = 0;
   for (let i = 0; i < compactions.length; i++) {
@@ -659,7 +663,7 @@ function importSubagents(dbModule, sessionId, mainAgentId, toolUses) {
   if (!toolUses || toolUses.length === 0) return 0;
   const { stmts } = dbModule;
   const insertEvent = dbModule.db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
   );
 
   let created = 0;
@@ -718,7 +722,7 @@ function importApiErrors(dbModule, sessionId, mainAgentId, apiErrors) {
   if (!apiErrors || apiErrors.length === 0) return 0;
   const { db } = dbModule;
   const insertEvent = db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
   );
   let created = 0;
   for (const err of apiErrors) {
@@ -1035,7 +1039,7 @@ function importSubagentFromJsonl(dbModule, sessionId, mainAgentId, subData) {
   // importSession level (subagents have their own JSONL with separate usage).
 
   const insertEvent = db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
   );
 
   // Spawn marker under the parent (main) agent — only emit once per subagent,
@@ -1219,7 +1223,7 @@ function importSession(dbModule, session) {
 
     const mainAgentId = `${session.sessionId}-main`;
     const insertEvent = db.prepare(
-      "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
     );
     const importedData = JSON.stringify({ imported: true });
     let backfilled = false;
@@ -1629,7 +1633,7 @@ function importSession(dbModule, session) {
   // Create synthetic events at actual message timestamps so the activity heatmap
   // reflects when work actually happened, not just session start/end.
   const insertEvent = db.prepare(
-    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO events (session_id, agent_id, event_type, tool_name, summary, data, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?, 'import', ?)"
   );
   const importedData = JSON.stringify({ imported: true });
 

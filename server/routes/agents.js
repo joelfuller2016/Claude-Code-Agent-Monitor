@@ -4,7 +4,10 @@
  */
 
 const { Router } = require("express");
-const { stmts, db } = require("../db");
+const { stmts, db, rowWriter } = require("../db");
+
+// Rows created through the authenticated REST surface, not by a hook.
+const apiRows = rowWriter("api");
 const { broadcast } = require("../websocket");
 const { attachAgentCosts } = require("./pricing");
 const { parseSources, sessionIdInSourcesClause } = require("../lib/source-filter");
@@ -119,7 +122,7 @@ router.post("/", (req, res) => {
     return res.json({ agent: existing, created: false });
   }
 
-  stmts.insertAgent.run(
+  apiRows.insertAgent.run(
     id,
     session_id,
     name,

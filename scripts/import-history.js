@@ -601,6 +601,29 @@ async function parseSubagentFile(filePath) {
 // disk, so provenance is the literal 'import' rather than an eventWriter from
 // server/db: these statements are prepared against the CALLER's dbModule, and
 // binding them to the singleton would break that injection.
+//
+// The shared sessions/agents statements have the same constraint, so they go
+// through the caller's own rowWriter. Memoized per dbModule: some of these run
+// once per transcript entry, and a fresh writer per row would be wasteful.
+//
+// Callers may hand us a PARTIAL module -- upstream's own suite injects a
+// literal `{ db, stmts }` with no rowWriter, and third-party callers may do the
+// same. Degrade to the shared statements in that case rather than throwing:
+// those rows then read 'unknown', which is exactly what they are, a write whose
+// caller did not declare. Crashing an importer over a provenance label would be
+// a far worse trade.
+const importRowsCache = new WeakMap();
+function importRows(dbModule) {
+  let w = importRowsCache.get(dbModule);
+  if (!w) {
+    w =
+      typeof dbModule.rowWriter === "function"
+        ? dbModule.rowWriter("import")
+        : dbModule.stmts;
+    importRowsCache.set(dbModule, w);
+  }
+  return w;
+}
 function importCompactions(dbModule, sessionId, mainAgentId, compactions) {
   if (!compactions || compactions.length === 0) return 0;
   const { db, stmts } = dbModule;
@@ -615,7 +638,7 @@ function importCompactions(dbModule, sessionId, mainAgentId, compactions) {
     if (stmts.getAgent.get(compactId)) continue;
 
     const ts = c.timestamp || new Date().toISOString();
-    stmts.insertAgent.run(
+    importRows(dbModule).insertAgent.run(
       compactId,
       sessionId,
       "Context Compaction",
@@ -685,7 +708,7 @@ function importSubagents(dbModule, sessionId, mainAgentId, toolUses) {
     const subName = rawName.length > 60 ? rawName.slice(0, 57) + "..." : rawName;
     const ts = tu.timestamp || new Date().toISOString();
 
-    stmts.insertAgent.run(
+    importRows(dbModule).insertAgent.run(
       subId,
       sessionId,
       subName,
@@ -939,7 +962,7 @@ function importSubagentFromJsonl(dbModule, sessionId, mainAgentId, subData) {
   // findLiveSubagentForJsonl above; in that case tool events are emitted under
   // the live row's id and no parallel JSONL-keyed row is needed.
   if (!liveSub && !existingJsonl) {
-    stmts.insertAgent.run(
+    importRows(dbModule).insertAgent.run(
       jsonlSubId,
       sessionId,
       subName,
@@ -1563,7 +1586,7 @@ function importSession(dbModule, session) {
       : 0,
   });
 
-  stmts.insertSession.run(
+  importRows(dbModule).insertSession.run(
     session.sessionId,
     session.name,
     sessionStatus,
@@ -1591,7 +1614,7 @@ function importSession(dbModule, session) {
 
   const mainAgentId = `${session.sessionId}-main`;
   const agentLabel = `Main Agent - ${session.name}`;
-  stmts.insertAgent.run(
+  importRows(dbModule).insertAgent.run(
     mainAgentId,
     session.sessionId,
     agentLabel,
@@ -1612,7 +1635,7 @@ function importSession(dbModule, session) {
 
   for (const teamName of session.teams) {
     const subId = `${session.sessionId}-team-${teamName}`;
-    stmts.insertAgent.run(
+    importRows(dbModule).insertAgent.run(
       subId,
       session.sessionId,
       teamName,

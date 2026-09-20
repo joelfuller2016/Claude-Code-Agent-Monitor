@@ -172,7 +172,12 @@ db.exec(`
     -- Two most recent distinct human prompts, newline-separated. This is a
     -- deliberately small card-only cache derived from the local transcript;
     -- it keeps list views informative without storing whole conversations.
-    card_prompt_preview TEXT
+    card_prompt_preview TEXT,
+    -- Which write path created this row. Same taxonomy as events.provenance;
+    -- see EVENT_PROVENANCE. Distinct from 'source' (which machine) and
+    -- 'provider' (which product) -- this is HOW the row got here.
+    provenance TEXT NOT NULL DEFAULT 'unknown'
+      CHECK(provenance IN ('hook','api','import','derived','seed','unknown'))
   );
 
   CREATE TABLE IF NOT EXISTS agents (
@@ -188,6 +193,11 @@ db.exec(`
     ended_at TEXT,
     parent_agent_id TEXT,
     metadata TEXT,
+    -- See sessions.provenance. Matters most here: 'status' defaults to
+    -- 'waiting', so an agent nothing ever reported reads as idle. Provenance
+    -- at least says whether anything reported the row at all.
+    provenance TEXT NOT NULL DEFAULT 'unknown'
+      CHECK(provenance IN ('hook','api','import','derived','seed','unknown')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
     FOREIGN KEY (parent_agent_id) REFERENCES agents(id) ON DELETE SET NULL
   );
@@ -1639,6 +1649,35 @@ try {
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_events_provenance ON events(provenance)`);
 
+// Same column, same taxonomy, for the two tables a dispatcher would actually
+// read. `events` answers "where did this observation come from"; these answer
+// "did anything report this session/agent at all, or did we infer it".
+//
+// That second question is the sharper one for `agents`: status defaults to
+// 'waiting', so an agent whose hook never fired is indistinguishable from one
+// genuinely free. Provenance does not fix that default -- it is a separate
+// concern -- but it does let a reader tell a reported row from an imported or
+// inferred one before trusting the status on it.
+try {
+  db.prepare("SELECT provenance FROM sessions LIMIT 1").get();
+} catch {
+  db.prepare(
+    "ALTER TABLE sessions ADD COLUMN provenance TEXT NOT NULL DEFAULT 'unknown' " +
+      "CHECK(provenance IN ('hook','api','import','derived','seed','unknown'))"
+  ).run();
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_provenance ON sessions(provenance)`);
+
+try {
+  db.prepare("SELECT provenance FROM agents LIMIT 1").get();
+} catch {
+  db.prepare(
+    "ALTER TABLE agents ADD COLUMN provenance TEXT NOT NULL DEFAULT 'unknown' " +
+      "CHECK(provenance IN ('hook','api','import','derived','seed','unknown'))"
+  ).run();
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_provenance ON agents(provenance)`);
+
 /**
  * Provenance-aware event writers.
  *
@@ -1703,10 +1742,56 @@ function eventWriter(provenance) {
   };
 }
 
+const insertSessionStmt = db.prepare(
+  "INSERT INTO sessions (id, name, status, cwd, model, started_at, updated_at, metadata, provenance) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)"
+);
+const insertCodexSessionStmt = db.prepare(
+  "INSERT INTO sessions (id, name, status, cwd, model, provider, source, started_at, updated_at, metadata, provenance) VALUES (?, ?, ?, ?, ?, 'codex', ?, ?, ?, ?, ?)"
+);
+const insertAgentStmt = db.prepare(
+  "INSERT INTO agents (id, session_id, name, type, subagent_type, status, task, started_at, updated_at, parent_agent_id, metadata, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?)"
+);
+
+/**
+ * The session/agent half of `eventWriter`, same taxonomy and same reason:
+ * declare the write path once at construction so no individual call site can
+ * forget it. Returns all three inserts bound to one provenance.
+ */
+function rowWriter(provenance) {
+  if (!EVENT_PROVENANCE.includes(provenance)) {
+    throw new Error(
+      `rowWriter: unrecognized provenance ${JSON.stringify(provenance)}; expected one of ${EVENT_PROVENANCE.join(", ")}`
+    );
+  }
+  const ev = eventWriter(provenance);
+  return {
+    provenance,
+    insertEvent: ev.insertEvent,
+    insertEventAt: ev.insertEventAt,
+    insertSession: {
+      run: (id, name, status, cwd, model, metadata) =>
+        insertSessionStmt.run(id, name, status, cwd, model, metadata, provenance),
+    },
+    insertCodexSession: {
+      run: (id, name, status, cwd, model, source, startedAt, updatedAt, metadata) =>
+        insertCodexSessionStmt.run(
+          id, name, status, cwd, model, source, startedAt, updatedAt, metadata, provenance
+        ),
+    },
+    insertAgent: {
+      run: (id, sessionId, name, type, subagentType, status, task, parentAgentId, metadata) =>
+        insertAgentStmt.run(
+          id, sessionId, name, type, subagentType, status, task, parentAgentId, metadata, provenance
+        ),
+    },
+  };
+}
+
 // Back-compat: `stmts.insertEvent` keeps its exact signature for any caller
 // that has not been taught to declare. Such rows read as `unknown`, which is
 // the truth about them, rather than being silently attributed to the hook path.
 const undeclaredEvents = eventWriter("unknown");
+const undeclaredRows = rowWriter("unknown");
 
 const stmts = {
   getSession: db.prepare("SELECT * FROM sessions WHERE id = ?"),
@@ -1722,12 +1807,8 @@ const stmts = {
      FROM sessions s LEFT JOIN agents a ON a.session_id = s.id
      WHERE s.status = ? GROUP BY s.id ORDER BY last_activity DESC LIMIT ? OFFSET ?`
   ),
-  insertSession: db.prepare(
-    "INSERT INTO sessions (id, name, status, cwd, model, started_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?)"
-  ),
-  insertCodexSession: db.prepare(
-    "INSERT INTO sessions (id, name, status, cwd, model, provider, source, started_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, 'codex', ?, ?, ?, ?)"
-  ),
+  insertSession: undeclaredRows.insertSession,
+  insertCodexSession: undeclaredRows.insertCodexSession,
   updateSession: db.prepare(
     "UPDATE sessions SET name = COALESCE(?, name), status = COALESCE(?, status), ended_at = COALESCE(?, ended_at), metadata = COALESCE(?, metadata), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
   ),
@@ -1844,9 +1925,7 @@ const stmts = {
     `SELECT a.*, ${AGENT_LAST_ACTIVITY_SQL} AS last_activity
      FROM agents a WHERE a.status = ? ORDER BY last_activity DESC LIMIT ? OFFSET ?`
   ),
-  insertAgent: db.prepare(
-    "INSERT INTO agents (id, session_id, name, type, subagent_type, status, task, started_at, updated_at, parent_agent_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)"
-  ),
+  insertAgent: undeclaredRows.insertAgent,
   updateAgent: db.prepare(
     "UPDATE agents SET name = COALESCE(?, name), status = COALESCE(?, status), task = COALESCE(?, task), current_tool = ?, ended_at = COALESCE(?, ended_at), metadata = COALESCE(?, metadata), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
   ),
@@ -2470,6 +2549,7 @@ module.exports = {
   db,
   stmts,
   eventWriter,
+  rowWriter,
   EVENT_PROVENANCE,
   DB_PATH,
   DEFAULT_PRICING,

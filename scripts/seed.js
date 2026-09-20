@@ -27,10 +27,10 @@
  */
 
 const { v4: uuidv4 } = require("uuid");
-const { db, stmts, eventWriter } = require("../server/db");
+const { db, stmts, rowWriter } = require("../server/db");
 
 // Demo data. Recorded as `seed` so it can never be counted as real activity.
-const seedEvents = eventWriter("seed");
+const seedEvents = rowWriter("seed");
 
 // ── Stable fixture IDs ─────────────────────────────────────────────────────
 // These IDs are intentionally non-UUID-shaped strings prefixed with `demo-`
@@ -160,7 +160,7 @@ function seedFixtures() {
     if (sessionExists(FIXTURES.solo.sessionId)) {
       result.skipped.push("Single Agent: Quick Hotfix");
     } else {
-      stmts.insertSession.run(
+      seedEvents.insertSession.run(
         FIXTURES.solo.sessionId,
         "Single Agent: Quick Hotfix",
         "active",
@@ -168,7 +168,7 @@ function seedFixtures() {
         "claude-sonnet-4-6",
         null
       );
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         FIXTURES.solo.mainAgentId,
         FIXTURES.solo.sessionId,
         "Main Agent",
@@ -193,7 +193,7 @@ function seedFixtures() {
     if (sessionExists(FIXTURES.waiting.sessionId)) {
       result.skipped.push("Waiting Demo: Permission Prompt");
     } else {
-      stmts.insertSession.run(
+      seedEvents.insertSession.run(
         FIXTURES.waiting.sessionId,
         "Waiting Demo: Permission Prompt",
         "active",
@@ -201,7 +201,7 @@ function seedFixtures() {
         "claude-opus-4-6",
         null
       );
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         FIXTURES.waiting.mainAgentId,
         FIXTURES.waiting.sessionId,
         "Main Agent",
@@ -225,7 +225,7 @@ function seedFixtures() {
       result.skipped.push("Deep Nesting: Multi-Agent Research Pipeline");
     } else {
       const ids = FIXTURES.nested.agents;
-      stmts.insertSession.run(
+      seedEvents.insertSession.run(
         FIXTURES.nested.sessionId,
         "Deep Nesting: Multi-Agent Research Pipeline",
         "active",
@@ -233,7 +233,7 @@ function seedFixtures() {
         "claude-opus-4-6",
         null
       );
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         FIXTURES.nested.mainAgentId,
         FIXTURES.nested.sessionId,
         "Main Agent",
@@ -246,7 +246,7 @@ function seedFixtures() {
       );
 
       // Depth 1: Main → Codebase Explorer (working)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l1Explorer,
         FIXTURES.nested.sessionId,
         "Codebase Explorer",
@@ -260,7 +260,7 @@ function seedFixtures() {
       db.prepare("UPDATE agents SET current_tool = ? WHERE id = ?").run("Glob", ids.l1Explorer);
 
       // Depth 2: Explorer → Security Researcher (working)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l2Researcher,
         FIXTURES.nested.sessionId,
         "Security Researcher",
@@ -277,7 +277,7 @@ function seedFixtures() {
       );
 
       // Depth 3: Researcher → Test Engineer (working)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l3TestWriter,
         FIXTURES.nested.sessionId,
         "Test Engineer",
@@ -291,7 +291,7 @@ function seedFixtures() {
       db.prepare("UPDATE agents SET current_tool = ? WHERE id = ?").run("Write", ids.l3TestWriter);
 
       // Depth 4: Test Engineer → Test Debugger (deepest leaf)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l4Debugger,
         FIXTURES.nested.sessionId,
         "Test Debugger",
@@ -305,7 +305,7 @@ function seedFixtures() {
       db.prepare("UPDATE agents SET current_tool = ? WHERE id = ?").run("Bash", ids.l4Debugger);
 
       // Depth 2 branch (sibling of Researcher): Code Reviewer (completed leaf)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l2Reviewer,
         FIXTURES.nested.sessionId,
         "Code Reviewer",
@@ -319,7 +319,7 @@ function seedFixtures() {
       db.prepare("UPDATE agents SET ended_at = ? WHERE id = ?").run(minutesAgo(5), ids.l2Reviewer);
 
       // Depth 1 sibling: Architecture Planner (completed leaf)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l1Architect,
         FIXTURES.nested.sessionId,
         "Architecture Planner",
@@ -336,7 +336,7 @@ function seedFixtures() {
       );
 
       // Depth 1 sibling: Documentation Writer (working — has its own child)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l1DocWriter,
         FIXTURES.nested.sessionId,
         "Documentation Writer",
@@ -350,7 +350,7 @@ function seedFixtures() {
       db.prepare("UPDATE agents SET current_tool = ? WHERE id = ?").run("Edit", ids.l1DocWriter);
 
       // Depth 2: Doc Writer → Example Generator (connected leaf)
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         ids.l2ExampleGen,
         FIXTURES.nested.sessionId,
         "Example Generator",
@@ -405,7 +405,7 @@ function seedFullDemo() {
     const sessions = [];
 
     const activeSessionId = uuidv4();
-    stmts.insertSession.run(
+    seedEvents.insertSession.run(
       activeSessionId,
       "Feature: User Authentication",
       "active",
@@ -416,7 +416,7 @@ function seedFullDemo() {
     sessions.push(activeSessionId);
 
     const activeSessionId2 = uuidv4();
-    stmts.insertSession.run(
+    seedEvents.insertSession.run(
       activeSessionId2,
       "Bug Fix: Payment Processing",
       "active",
@@ -428,7 +428,7 @@ function seedFullDemo() {
 
     for (let i = 0; i < 5; i++) {
       const id = uuidv4();
-      stmts.insertSession.run(
+      seedEvents.insertSession.run(
         id,
         randomItem([
           "Refactor: Database Layer",
@@ -450,7 +450,7 @@ function seedFullDemo() {
     }
 
     const errSessionId = uuidv4();
-    stmts.insertSession.run(
+    seedEvents.insertSession.run(
       errSessionId,
       "Deploy: Production Release",
       "error",
@@ -462,7 +462,7 @@ function seedFullDemo() {
     sessions.push(errSessionId);
 
     const mainAgent1 = `${activeSessionId}-main`;
-    stmts.insertAgent.run(
+    seedEvents.insertAgent.run(
       mainAgent1,
       activeSessionId,
       "Main Agent",
@@ -478,7 +478,7 @@ function seedFullDemo() {
     for (let i = 0; i < 3; i++) {
       const subId = uuidv4();
       const status = randomItem(["working", "working", "working"]);
-      stmts.insertAgent.run(
+      seedEvents.insertAgent.run(
         subId,
         activeSessionId,
         AGENT_NAMES[i + 1],
@@ -498,7 +498,7 @@ function seedFullDemo() {
     }
 
     const mainAgent2 = `${activeSessionId2}-main`;
-    stmts.insertAgent.run(
+    seedEvents.insertAgent.run(
       mainAgent2,
       activeSessionId2,
       "Main Agent",
@@ -511,7 +511,7 @@ function seedFullDemo() {
     );
 
     const sub2 = uuidv4();
-    stmts.insertAgent.run(
+    seedEvents.insertAgent.run(
       sub2,
       activeSessionId2,
       "Debugger",
@@ -526,7 +526,7 @@ function seedFullDemo() {
 
     for (const sid of sessions.slice(2)) {
       const mainId = `${sid}-main`;
-      stmts.insertAgent.run(mainId, sid, "Main Agent", "main", null, "completed", null, null, null);
+      seedEvents.insertAgent.run(mainId, sid, "Main Agent", "main", null, "completed", null, null, null);
       db.prepare("UPDATE agents SET ended_at = ? WHERE id = ?").run(
         minutesAgo(Math.floor(Math.random() * 60)),
         mainId
@@ -535,7 +535,7 @@ function seedFullDemo() {
       for (let i = 0; i < subCount; i++) {
         const subId = uuidv4();
         const name = randomItem(AGENT_NAMES.slice(1));
-        stmts.insertAgent.run(
+        seedEvents.insertAgent.run(
           subId,
           sid,
           name,

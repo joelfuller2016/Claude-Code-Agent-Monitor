@@ -279,6 +279,12 @@ function parseWorkflowJournal(journalPath) {
  */
 async function ingestWorkflowJournal(dbModule, sessionId, journal, opts = {}) {
   const { stmts } = dbModule;
+  // Workflow / self-paced-loop inner agents emit NO hooks (see the file header);
+  // every row here is reconstructed from transcripts already on disk.
+  // Partial dbModule tolerated, same as scripts/import-history.js: fall back to
+  // the shared statements, which record 'unknown' rather than throwing.
+  const importRows =
+    typeof dbModule.rowWriter === "function" ? dbModule.rowWriter("import") : stmts;
   const mainAgentId = `${sessionId}-main`;
   const ih = importHistory();
   // Inner-agent transcripts live in a per-run nested dir, not the session's
@@ -344,7 +350,7 @@ async function ingestWorkflowJournal(dbModule, sessionId, journal, opts = {}) {
         ih.importSubagentFromJsonl(dbModule, sessionId, mainAgentId, parsed);
         mergeWorkflowTokens(runTokens, parsed.tokensByModel);
       } else if (!stmts.getAgent.get(jsonlId)) {
-        stmts.insertAgent.run(
+        importRows.insertAgent.run(
           jsonlId,
           sessionId,
           entry.label || `Subagent ${String(agentId).slice(0, 8)}`,
@@ -414,6 +420,10 @@ function bucketTotal(tokensByModel) {
  */
 async function ingestLiveWorkflow(dbModule, sessionId, sessionDir, runId, scriptPath) {
   const { stmts } = dbModule;
+  // Partial dbModule tolerated, same as scripts/import-history.js: fall back to
+  // the shared statements, which record 'unknown' rather than throwing.
+  const importRows =
+    typeof dbModule.rowWriter === "function" ? dbModule.rowWriter("import") : stmts;
   const mainAgentId = `${sessionId}-main`;
   const ih = importHistory();
   const dir = agentsDirForRun(sessionDir, runId);
@@ -507,7 +517,7 @@ async function ingestLiveWorkflow(dbModule, sessionId, sessionDir, runId, script
         ih.importSubagentFromJsonl(dbModule, sessionId, mainAgentId, parsed);
         mergeWorkflowTokens(runTokens, parsed.tokensByModel);
       } else if (!stmts.getAgent.get(jsonlId)) {
-        stmts.insertAgent.run(
+        importRows.insertAgent.run(
           jsonlId,
           sessionId,
           label || `Subagent ${agentId.slice(0, 8)}`,

@@ -10,11 +10,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { db, stmts, eventWriter } = require("../db");
+const { db, stmts, rowWriter } = require("../db");
 
 // Rows here are reconstructed from a rollout file already on disk, not
 // observed live, so they are imports even though the parse happens in-process.
-const importEvents = eventWriter("import");
+const importEvents = rowWriter("import");
 const {
   getCodexSessionsDir,
   getCodexStateDbPath,
@@ -537,7 +537,7 @@ function createCodexSession(meta, transcriptPath, options = {}) {
     git: meta?.git || null,
   });
   const confirmedHistorical = options.confirmedLive === false;
-  stmts.insertCodexSession.run(
+  importEvents.insertCodexSession.run(
     sessionId,
     getCodexSessionTitle(sessionId) || "Codex session",
     confirmedHistorical ? "completed" : "active",
@@ -555,7 +555,7 @@ function createCodexSession(meta, transcriptPath, options = {}) {
     stmts.setSessionTranscriptPath.run(transcriptPath, sessionId);
   }
   const agentId = `codex:${sessionId}`;
-  stmts.insertAgent.run(
+  importEvents.insertAgent.run(
     agentId,
     sessionId,
     "Codex",

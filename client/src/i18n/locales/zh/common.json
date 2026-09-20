@@ -44,7 +44,8 @@
     "completed": "已完成",
     "error": "错误",
     "active": "活跃",
-    "abandoned": "已废弃"
+    "abandoned": "已废弃",
+    "unreported": "未报告"
   },
   "awaitingReason": {
     "notification": {

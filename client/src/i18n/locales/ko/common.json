@@ -44,7 +44,8 @@
     "completed": "완료됨",
     "error": "오류",
     "active": "활성",
-    "abandoned": "중단됨"
+    "abandoned": "중단됨",
+    "unreported": "보고되지 않음"
   },
   "awaitingReason": {
     "notification": {
